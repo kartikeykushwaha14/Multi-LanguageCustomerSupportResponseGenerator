@@ -1,14 +1,25 @@
-import google.generativeai as genai
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Tuple, Optional
-import json
-import re
-from datetime import datetime
-import logging
-from collections import defaultdict
+# main.py
+import os
 import time
+import logging
+from datetime import datetime
+from collections import defaultdict
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
+import json
+
+try:
+    import google.generativeai as genai
+    import pandas as pd
+    import numpy as np
+    from dotenv import load_dotenv
+except ImportError as e:
+    print(f"Missing required package: {e}")
+    print("Please install requirements: pip install google-generativeai pandas numpy python-dotenv")
+    exit(1)
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,8 +38,11 @@ class ComplaintAnalyzer(BaseAnalyzer):
     """Advanced NLP analysis for customer complaints"""
 
     def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("Gemini API key is required")
+
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash')
 
         # Predefined categories for classification
         self.categories = [
@@ -75,6 +89,10 @@ class ComplaintAnalyzer(BaseAnalyzer):
             """
             category_response = self.model.generate_content(category_prompt)
             category = category_response.text.strip()
+
+            # If category not in predefined list, use the most similar
+            if category not in self.categories:
+                category = self._find_closest_category(category)
 
             # Urgency detection
             urgency_score = self._calculate_urgency(text)
@@ -123,6 +141,15 @@ class ComplaintAnalyzer(BaseAnalyzer):
                 "timestamp": datetime.now().isoformat()
             }
 
+    def _find_closest_category(self, category: str) -> str:
+        """Find the closest matching category from predefined list"""
+        # Simple implementation - in production, use more sophisticated matching
+        category_lower = category.lower()
+        for predefined in self.categories:
+            if predefined.lower() in category_lower or category_lower in predefined.lower():
+                return predefined
+        return "General Inquiry"
+
     def _calculate_urgency(self, text: str) -> float:
         """Calculate urgency score based on text content"""
         text_lower = text.lower()
@@ -160,8 +187,11 @@ class ResponseGenerator(BaseAnalyzer):
     """LLM-powered response generation with tone adaptation"""
 
     def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("Gemini API key is required")
+
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash')
 
         # Tone templates for different scenarios
         self.tone_templates = {
@@ -171,6 +201,10 @@ class ResponseGenerator(BaseAnalyzer):
             "urgency": "We recognize the urgency of your issue with {issue} and are prioritizing a solution.",
             "neutral": "We've received your message regarding {issue} and are looking into it."
         }
+
+    def analyze(self, text: str) -> Dict:
+        """Implement abstract method - not used in this class"""
+        return {}
 
     def generate_response(self, complaint_text: str, analysis: Dict, language: str = "en") -> Dict:
         """Generate a culturally appropriate response based on analysis"""
@@ -278,8 +312,11 @@ class TranslationManager:
     """Handles translation with cultural adaptation"""
 
     def __init__(self, api_key: str):
+        if not api_key:
+            raise ValueError("Gemini API key is required")
+
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel('gemini-pro')
+        self.model = genai.GenerativeModel('gemini-2.0-flash')
 
         # Supported languages with cultural notes
         self.supported_languages = {
@@ -290,12 +327,24 @@ class TranslationManager:
             "it": "Italian",
             "pt": "Portuguese",
             "ru": "Russian",
-            "zh": "Chinese",
+            "zh": "Chinese (Simplified)",
             "ja": "Japanese",
             "ko": "Korean",
             "ar": "Arabic",
             "hi": "Hindi",
-            # Add more languages as needed
+            "nl": "Dutch",
+            "sv": "Swedish",
+            "da": "Danish",
+            "no": "Norwegian",
+            "fi": "Finnish",
+            "tr": "Turkish",
+            "pl": "Polish",
+            "uk": "Ukrainian",
+            "vi": "Vietnamese",
+            "th": "Thai",
+            "id": "Indonesian",
+            "ms": "Malay",
+            "tl": "Filipino"
         }
 
     def translate_with_cultural_adaptation(self, text: str, target_lang: str, context: Dict = None) -> str:
@@ -304,21 +353,27 @@ class TranslationManager:
             # Prepare cultural context prompt
             cultural_context = ""
             if context:
-                cultural_context = f"Additional context: {json.dumps(context)}"
+                cultural_context = f"Cultural context: The tone should be {context.get('tone', 'neutral')} and the category is {context.get('category', 'general')}."
 
             prompt = f"""
-            Translate the following customer support message to {self.supported_languages[target_lang]} ({target_lang}).
+            Translate the following customer support message to {self.supported_languages.get(target_lang, target_lang)}.
             Ensure the translation is culturally appropriate and maintains the original tone and intent.
+            Use appropriate greetings, expressions, and formalities for the target language.
 
             {cultural_context}
 
             Original text: {text}
 
-            Translation:
+            Provide only the translated text without any additional explanations.
             """
 
             response = self.model.generate_content(prompt)
-            return response.text.strip()
+            translated_text = response.text.strip()
+
+            # Remove any quotes or formatting that might be added
+            translated_text = translated_text.replace('"', '').replace("'", "")
+
+            return translated_text
 
         except Exception as e:
             logger.error(f"Translation error: {e}")
@@ -385,11 +440,15 @@ class CustomerSupportSystem:
     """Main system orchestrating the customer support pipeline"""
 
     def __init__(self, gemini_api_key: str):
+        if not gemini_api_key:
+            raise ValueError("Gemini API key is required")
+
         self.api_key = gemini_api_key
 
         # Initialize components
-        self.analyzer = ComplaintAnalyzer("AIzaSyAcs7yUquk_FG6Nisn4Ugxfxf_4gtZlKEY")
-        self.translation_manager = TranslationManager("AIzaSyAcs7yUquk_FG6Nisn4Ugxfxf_4gtZlKEY")
+        self.analyzer = ComplaintAnalyzer(gemini_api_key)
+        self.response_generator = ResponseGenerator(gemini_api_key)
+        self.translation_manager = TranslationManager(gemini_api_key)
         self.metrics = QualityMetrics()
 
         logger.info("Customer Support System initialized")
@@ -403,17 +462,26 @@ class CustomerSupportSystem:
             analysis = self.analyzer.analyze(complaint_text)
             logger.info(f"Complaint analyzed: {analysis['category']} ({analysis['sentiment']})")
 
-            # Step 2: Generate response in English first
+            # Step 2: Generate response in the target language directly
             response = self.response_generator.generate_response(
-                complaint_text, analysis, language="en"
+                complaint_text, analysis, language=preferred_language
             )
 
-            # Step 3: Translate if needed
-            if preferred_language != "en" and preferred_language in self.translation_manager.get_supported_languages():
+            # Step 3: If the response is in English but we need another language, translate it
+            if (preferred_language != "en" and
+                    preferred_language in self.translation_manager.get_supported_languages() and
+                    response["language"] == "en"):
+                # Translate the response
+                translation_context = {
+                    "tone": response["tone"],
+                    "category": analysis["category"],
+                    "sentiment": analysis["sentiment"]
+                }
+
                 translated_response = self.translation_manager.translate_with_cultural_adaptation(
                     response["response"],
                     preferred_language,
-                    context={"tone": response["tone"], "category": analysis["category"]}
+                    context=translation_context
                 )
                 response["response"] = translated_response
                 response["language"] = preferred_language
@@ -494,19 +562,19 @@ def demo_system(api_key: str):
     sample_complaints = [
         {
             "text": "Your product stopped working after just one week! This is completely unacceptable and I want a full refund immediately.",
-            "language": "en"
-        },
-        {
-            "text": "I've been waiting for my package for over two weeks now. The tracking hasn't updated in days and I need this for an important event.",
             "language": "es"
         },
         {
-            "text": "The mobile app keeps crashing every time I try to upload a photo. I've already uninstalled and reinstalled it three times!",
+            "text": "I've been waiting for my package for over two weeks now. The tracking hasn't updated in days and I need this for an important event.",
             "language": "fr"
         },
         {
-            "text": "I just wanted to say thank you for the excellent service I received yesterday. Maria was incredibly helpful and patient with all my questions.",
+            "text": "The mobile app keeps crashing every time I try to upload a photo. I've already uninstalled and reinstalled it three times!",
             "language": "de"
+        },
+        {
+            "text": "I just wanted to say thank you for the excellent service I received yesterday. Maria was incredibly helpful and patient with all my questions.",
+            "language": "it"
         }
     ]
 
@@ -514,6 +582,7 @@ def demo_system(api_key: str):
     for i, complaint in enumerate(sample_complaints, 1):
         print(f"\n--- Processing Complaint #{i} ---")
         print(f"Original: {complaint['text']}")
+        print(f"Target Language: {complaint['language']}")
 
         result = css.process_ticket(complaint['text'], complaint['language'])
 
@@ -524,6 +593,7 @@ def demo_system(api_key: str):
         print(result['response']['response'])
         print(f"Predicted Satisfaction: {result['response']['predicted_satisfaction']:.2f}")
         print(f"Processing Time: {result['processing_time_seconds']:.3f}s")
+        print("-" * 80)
 
     # Show performance metrics
     print("\n--- Performance Metrics ---")
@@ -533,8 +603,12 @@ def demo_system(api_key: str):
 
 
 if __name__ == "__main__":
-    # Replace with your actual Gemini API key
-    GEMINI_API_KEY = "AIzaSyAcs7yUquk_FG6Nisn4Ugxfxf_4gtZlKEY"
+    # Get API key from environment variable or user input
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+    if not GEMINI_API_KEY:
+        GEMINI_API_KEY = input("Please enter your Gemini API key: ")
+        os.environ["GEMINI_API_KEY"] = GEMINI_API_KEY
 
     # Run demonstration
     demo_system(GEMINI_API_KEY)
